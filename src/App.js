@@ -21,31 +21,51 @@ function formatDate(str) {
 }
 function clamp(v,min,max) { return Math.max(min, Math.min(max, v)); }
 
-function calcObjectiveScore(obj) {
-  if (!obj.metrics || obj.metrics.length === 0) return null;
-  var scores = obj.metrics.map(function(m) {
-    if (m.type === "count") {
-      var total = Object.values(m.entries || {}).reduce(function(a,b){return a+(b||0);},0);
-      if (!m.target || m.target <= 0) return null;
-      var direction = m.direction || "gte";
+function calcMetricScore(m) {
+  var direction = m.direction || "gte";
+  var mode = m.mode || "total"; // "total" = acumulado, "daily" = por dia
+  if (m.type === "count") {
+    if (!m.target || m.target <= 0) return null;
+    var entries = Object.entries(m.entries || {});
+    if (entries.length === 0) return null;
+    if (mode === "daily") {
+      // Cada dia se evalua independiente, promedio de todos los dias
+      var dayScores = entries.map(function(e) {
+        var val = e[1] || 0;
+        if (direction === "lte") {
+          if (val <= m.target) return 100;
+          return clamp(Math.round((m.target / val) * 100), 0, 99);
+        } else {
+          return clamp(Math.round((val / m.target) * 100), 0, 100);
+        }
+      });
+      return Math.round(dayScores.reduce(function(a,b){return a+b;},0) / dayScores.length);
+    } else {
+      // Acumulado: suma de todos los registros vs meta
+      var total = entries.reduce(function(a,e){return a+(e[1]||0);},0);
       if (direction === "lte") {
-        // No pasarse: si total <= target = 100%, si se pasa = proporcional inverso
         if (total <= m.target) return 100;
         return clamp(Math.round((m.target / total) * 100), 0, 99);
       } else {
-        // Llegar a: progreso normal hacia la meta
         return clamp(Math.round((total / m.target) * 100), 0, 100);
       }
-    } else if (m.type === "check") {
-      var entries = Object.values(m.entries || {});
-      if (entries.length === 0) return null;
-      return Math.round((entries.filter(function(v){return v;}).length / entries.length) * 100);
-    } else if (m.type === "scale") {
-      var vals = Object.values(m.entries || {}).filter(function(v){return v > 0;});
-      if (vals.length === 0) return null;
-      return Math.round((vals.reduce(function(a,b){return a+b;},0) / vals.length / 5) * 100);
     }
-    return null;
+  } else if (m.type === "check") {
+    var checkEntries = Object.values(m.entries || {});
+    if (checkEntries.length === 0) return null;
+    return Math.round((checkEntries.filter(function(v){return v;}).length / checkEntries.length) * 100);
+  } else if (m.type === "scale") {
+    var vals = Object.values(m.entries || {}).filter(function(v){return v > 0;});
+    if (vals.length === 0) return null;
+    return Math.round((vals.reduce(function(a,b){return a+b;},0) / vals.length / 5) * 100);
+  }
+  return null;
+}
+
+function calcObjectiveScore(obj) {
+  if (!obj.metrics || obj.metrics.length === 0) return null;
+  var scores = obj.metrics.map(function(m) {
+    return calcMetricScore(m);
   }).filter(function(s){return s!==null;});
   if (scores.length === 0) return null;
   return Math.round(scores.reduce(function(a,b){return a+b;},0) / scores.length);
@@ -221,13 +241,14 @@ function ObjectiveForm(props) {
   var [mType, setMType] = useState("count");
   var [mTarget, setMTarget] = useState("");
   var [mDirection, setMDirection] = useState("gte");
+  var [mMode, setMMode] = useState("total");
 
   function addMetric() {
     if (!mName.trim()) return;
     var m = { id:uid(), name:mName.trim(), type:mType, entries:{} };
-    if (mType === "count") { m.target = parseInt(mTarget)||1; m.direction = mDirection; }
+    if (mType === "count") { m.target = parseInt(mTarget)||1; m.direction = mDirection; m.mode = mMode; }
     setMetrics(function(prev){return prev.concat([m]);});
-    setMName(""); setMTarget(""); setMDirection("gte");
+    setMName(""); setMTarget(""); setMDirection("gte"); setMMode("total");
   }
   function removeMetric(id) { setMetrics(function(prev){return prev.filter(function(m){return m.id!==id;});}); }
   function submit() {
@@ -251,7 +272,7 @@ function ObjectiveForm(props) {
             <div key={m.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",borderRadius:8,background:t.surface2,marginBottom:6,border:"1px solid "+t.border}}>
               <div>
                 <span style={{color:t.text,fontSize:13,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>{m.name}</span>
-                <span style={{color:t.text3,fontSize:11,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>{m.type==="count"?(m.direction==="lte"?"Max: "+m.target:"Meta: "+m.target):m.type==="check"?"Check diario":"Escala 1-5"}</span>
+                <span style={{color:t.text3,fontSize:11,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>{m.type==="count"?((m.direction==="lte"?"Max: ":"Meta: ")+m.target+(m.mode==="daily"?" / dia":" total")):m.type==="check"?"Check diario":"Escala 1-5"}</span>
               </div>
               <button onClick={function(){removeMetric(m.id);}} style={{background:"none",border:"none",cursor:"pointer",color:t.red,fontSize:16,padding:"2px 6px"}}>x</button>
             </div>
@@ -268,6 +289,10 @@ function ObjectiveForm(props) {
               <div style={{display:"flex",gap:6,marginBottom:8}}>
                 <button onClick={function(){setMDirection("gte");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mDirection==="gte"?t.green:"transparent",color:mDirection==="gte"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>Llegar a (mayor igual)</button>
                 <button onClick={function(){setMDirection("lte");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mDirection==="lte"?t.red:"transparent",color:mDirection==="lte"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>No pasar de (menor igual)</button>
+              </div>
+              <div style={{display:"flex",gap:6,marginBottom:8}}>
+                <button onClick={function(){setMMode("daily");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mMode==="daily"?"#8B5CF6":"transparent",color:mMode==="daily"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>Por dia (ej: calorias)</button>
+                <button onClick={function(){setMMode("total");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mMode==="total"?"#8B5CF6":"transparent",color:mMode==="total"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>Acumulado (ej: citas)</button>
               </div>
             </div>
           )}
@@ -463,7 +488,7 @@ function PillarScreen(props) {
                       <div>
                         <span style={{fontSize:13,fontWeight:500,color:t.text,fontFamily:"'DM Sans',sans-serif"}}>{m.name}</span>
                         <span style={{fontSize:11,color:t.text3,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>
-                          {m.type==="count"?(m.direction==="lte"?"Total: "+(totalCount||0)+" (max "+m.target+")":"Total: "+(totalCount||0)+(m.target?" / "+m.target:"")):m.type==="check"?"Diario":"Escala 1-5"}
+                          {m.type==="count"?(m.mode==="daily"?(m.direction==="lte"?"Hoy: "+(m.entries[todayStr()]||0)+" / max "+m.target:"Hoy: "+(m.entries[todayStr()]||0)+" / "+m.target):(m.direction==="lte"?"Total: "+(totalCount||0)+" (max "+m.target+")":"Total: "+(totalCount||0)+(m.target?" / "+m.target:""))):m.type==="check"?"Diario":"Escala 1-5"}
                         </span>
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
