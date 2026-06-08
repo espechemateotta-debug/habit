@@ -26,7 +26,16 @@ function calcObjectiveScore(obj) {
   var scores = obj.metrics.map(function(m) {
     if (m.type === "count") {
       var total = Object.values(m.entries || {}).reduce(function(a,b){return a+(b||0);},0);
-      return m.target > 0 ? clamp(Math.round((total / m.target) * 100), 0, 100) : null;
+      if (!m.target || m.target <= 0) return null;
+      var direction = m.direction || "gte";
+      if (direction === "lte") {
+        // No pasarse: si total <= target = 100%, si se pasa = proporcional inverso
+        if (total <= m.target) return 100;
+        return clamp(Math.round((m.target / total) * 100), 0, 99);
+      } else {
+        // Llegar a: progreso normal hacia la meta
+        return clamp(Math.round((total / m.target) * 100), 0, 100);
+      }
     } else if (m.type === "check") {
       var entries = Object.values(m.entries || {});
       if (entries.length === 0) return null;
@@ -211,13 +220,14 @@ function ObjectiveForm(props) {
   var [mName, setMName] = useState("");
   var [mType, setMType] = useState("count");
   var [mTarget, setMTarget] = useState("");
+  var [mDirection, setMDirection] = useState("gte");
 
   function addMetric() {
     if (!mName.trim()) return;
     var m = { id:uid(), name:mName.trim(), type:mType, entries:{} };
-    if (mType === "count") m.target = parseInt(mTarget)||1;
+    if (mType === "count") { m.target = parseInt(mTarget)||1; m.direction = mDirection; }
     setMetrics(function(prev){return prev.concat([m]);});
-    setMName(""); setMTarget("");
+    setMName(""); setMTarget(""); setMDirection("gte");
   }
   function removeMetric(id) { setMetrics(function(prev){return prev.filter(function(m){return m.id!==id;});}); }
   function submit() {
@@ -241,7 +251,7 @@ function ObjectiveForm(props) {
             <div key={m.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",borderRadius:8,background:t.surface2,marginBottom:6,border:"1px solid "+t.border}}>
               <div>
                 <span style={{color:t.text,fontSize:13,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>{m.name}</span>
-                <span style={{color:t.text3,fontSize:11,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>{m.type==="count"?"Contador (meta: "+m.target+")":m.type==="check"?"Check diario":"Escala 1-5"}</span>
+                <span style={{color:t.text3,fontSize:11,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>{m.type==="count"?(m.direction==="lte"?"Max: "+m.target:"Meta: "+m.target):m.type==="check"?"Check diario":"Escala 1-5"}</span>
               </div>
               <button onClick={function(){removeMetric(m.id);}} style={{background:"none",border:"none",cursor:"pointer",color:t.red,fontSize:16,padding:"2px 6px"}}>x</button>
             </div>
@@ -252,7 +262,15 @@ function ObjectiveForm(props) {
           <div style={{display:"flex",gap:6,marginBottom:8}}>
             {[["count","Contador"],["check","Check"],["scale","Escala 1-5"]].map(function(opt){return <button key={opt[0]} onClick={function(){setMType(opt[0]);}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mType===opt[0]?t.accent:"transparent",color:mType===opt[0]?t.accentText:t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>{opt[1]}</button>;})}
           </div>
-          {mType==="count" && <input value={mTarget} onChange={function(e){setMTarget(e.target.value);}} placeholder="Meta numerica (ej: 8)" type="number" style={{width:"100%",padding:"8px 10px",borderRadius:8,background:t.surface3,border:"1px solid "+t.border2,color:t.text,fontSize:13,outline:"none",fontFamily:"'DM Sans',sans-serif",boxSizing:"border-box",marginBottom:8}}/>}
+          {mType==="count" && (
+            <div>
+              <input value={mTarget} onChange={function(e){setMTarget(e.target.value);}} placeholder="Meta numerica (ej: 8)" type="number" style={{width:"100%",padding:"8px 10px",borderRadius:8,background:t.surface3,border:"1px solid "+t.border2,color:t.text,fontSize:13,outline:"none",fontFamily:"'DM Sans',sans-serif",boxSizing:"border-box",marginBottom:8}}/>
+              <div style={{display:"flex",gap:6,marginBottom:8}}>
+                <button onClick={function(){setMDirection("gte");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mDirection==="gte"?t.green:"transparent",color:mDirection==="gte"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>Llegar a (mayor igual)</button>
+                <button onClick={function(){setMDirection("lte");}} style={{flex:1,padding:"6px 4px",borderRadius:8,border:"1px solid "+t.border2,cursor:"pointer",background:mDirection==="lte"?t.red:"transparent",color:mDirection==="lte"?"#fff":t.text2,fontSize:11,fontWeight:500,fontFamily:"'DM Sans',sans-serif"}}>No pasar de (menor igual)</button>
+              </div>
+            </div>
+          )}
           <button onClick={addMetric} style={{width:"100%",padding:"8px",borderRadius:8,border:"1px dashed "+t.border2,background:"transparent",color:t.text2,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif"}}>+ Agregar metrica</button>
         </div>
       </div>
@@ -445,7 +463,7 @@ function PillarScreen(props) {
                       <div>
                         <span style={{fontSize:13,fontWeight:500,color:t.text,fontFamily:"'DM Sans',sans-serif"}}>{m.name}</span>
                         <span style={{fontSize:11,color:t.text3,marginLeft:8,fontFamily:"'DM Sans',sans-serif"}}>
-                          {m.type==="count"?"Total: "+(totalCount||0)+(m.target?" / "+m.target:""):m.type==="check"?"Diario":"Escala 1-5"}
+                          {m.type==="count"?(m.direction==="lte"?"Total: "+(totalCount||0)+" (max "+m.target+")":"Total: "+(totalCount||0)+(m.target?" / "+m.target:"")):m.type==="check"?"Diario":"Escala 1-5"}
                         </span>
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
